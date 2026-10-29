@@ -60,13 +60,18 @@ Requires Hermes Agent ≥ 0.22 (the `MemoryProvider` contract) and `memo` ≥ 0.
 `hermes config set memory.specmemo.<key> <value>` to override them. `save_config()` is scoped to
 the active `hermes_home` and supports clearing a value (empty resets it to the default).
 
+`hermes config set` prints a `not a recognized config key` notice for every `memory.specmemo.*`
+key, not just `profile`: Hermes' generic validator does not merge memory-provider schemas, but
+the provider still reads the saved value at session start. Add `--force` to silence the notice,
+or set the key through `hermes memory setup` / the dashboard, which use the provider schema.
+
 ### Multiple profiles
 
 Each Hermes profile can keep its own vault project. Set `profile` in that profile's home:
 
 ```bash
-hermes -p developer config set memory.specmemo.profile auto   # → hermes-agent-developer
-hermes config set memory.specmemo.profile coder               # → hermes-agent-coder
+hermes -p developer config set memory.specmemo.profile auto --force   # → hermes-agent-developer
+hermes config set memory.specmemo.profile coder --force               # → hermes-agent-coder
 ```
 
 `profile` accepts a bare suffix (`coder`), a full id (`hermes-agent-coder`), or `auto`, which
