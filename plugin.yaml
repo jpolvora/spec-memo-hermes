@@ -1,5 +1,5 @@
 name: specmemo
-version: "0.2.1"
+version: "0.2.2"
 description: "spec-memo vault memory for Hermes Agent — one `hermes-agent` vault project, automatic recall, turn/session tracking and built-in-memory mirroring through the memo CLI."
 author: "Jone Polvora"
 license: "MIT"

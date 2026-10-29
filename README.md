@@ -73,8 +73,9 @@ the active `hermes_home` and supports clearing a value (empty resets it to the d
   prefixes such values with a space (`_cli_value`), and the session digest starts with
   `Turns:` so `--summary` is never mistaken for a boolean.
 - **Nothing blocks the turn.** `memo bootstrap` is warmed in the background at startup.
-  `prefetch` never spawns `memo`: it returns the cached `memo search` result warmed by
-  `queue_prefetch` (or the brief), and a cold cache simply skips search for that turn.
+  `prefetch` never spawns `memo`: it returns exact or term-overlapping cached `memo search`
+  hits (or the pending recall warmed by `queue_prefetch` at the end of the previous turn) plus
+  the brief, and deduplicates in-flight background searches per query.
 - **Bounded concurrency.** At most three `memo` children run at once across the provider's
   callers. Each child is a Node process (~90 MB RSS), so a saturated burst degrades to a soft
   miss instead of spawning unbounded processes on a small host.

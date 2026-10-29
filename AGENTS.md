@@ -111,7 +111,7 @@ Do not run tests or smoke commands against the real `~/.spec-memo` vault.
 
 ## 9. Release hygiene
 
-- Bump `version` in `plugin.yaml` for any behavior or config change (current: `0.2.0`).
+- Bump `version` in `plugin.yaml` for any behavior or config change (current: `0.2.2`).
 - Keep `homepage` pointing at <https://github.com/jpolvora/spec-memo-hermes> so the Hermes UI
   shows the source repository.
 - Keep `requires_hermes` and the README's version requirement in sync with the APIs used.

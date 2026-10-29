@@ -393,6 +393,8 @@ class SpecMemoMemoryProvider(MemoryProvider):
         self._brief_loading = False
         self._brief_lock = threading.Lock()
         self._recall_cache: dict[str, tuple[str, int]] = {}
+        self._pending_recall: Optional[tuple[str, int]] = None
+        self._inflight_queries: set[str] = set()
         self._last_recall: Optional[RecallStatus] = None
         self._threads: list[threading.Thread] = []
         self._threads_lock = threading.Lock()
@@ -483,12 +485,9 @@ class SpecMemoMemoryProvider(MemoryProvider):
         # Never spawn ``memo`` on the turn path. ``queue_prefetch`` warms this cache at
         # the end of the previous turn; a cold cache simply yields no search hits now.
         cached = self._cached_recall(fts) if fts else None
-        if cached is None:
-            if fts:
-                self.queue_prefetch(clean_query)
-            hits_text, hit_count = "", 0
-        else:
-            hits_text, hit_count = cached
+        if fts and not self._has_exact_recall(fts):
+            self.queue_prefetch(clean_query)
+        hits_text, hit_count = cached if cached is not None else ("", 0)
         budget = int(self._settings["max_bytes"])
         parts: list[str] = []
         used = 0
@@ -527,8 +526,16 @@ class SpecMemoMemoryProvider(MemoryProvider):
         if is_trivial_prompt(clean_query) or len(clean_query) < self._settings["min_query_len"]:
             return
         fts = _fts_query(clean_query)
-        if fts:
-            self._in_background("specmemo-prefetch", lambda: self._search(fts))
+        if not fts:
+            return
+        with self._cache_lock:
+            if fts in self._recall_cache:
+                self._pending_recall = self._recall_cache[fts]
+                return
+            if fts in self._inflight_queries:
+                return
+            self._inflight_queries.add(fts)
+        self._in_background("specmemo-prefetch", lambda: self._search(fts))
 
     def recall_status(self) -> Optional[RecallStatus]:
         return self._last_recall
@@ -600,6 +607,10 @@ class SpecMemoMemoryProvider(MemoryProvider):
         self._session_id = new_session_id or self._session_id
         if reset or (new_session_id and new_session_id != previous):
             self._turn = 0
+        if reset:
+            with self._cache_lock:
+                self._recall_cache.clear()
+                self._pending_recall = None
         if reset and self._primary and self._settings["record_turns"]:
             sid = self._session_id
             self._in_background("specmemo-session-start",
@@ -738,34 +749,55 @@ class SpecMemoMemoryProvider(MemoryProvider):
 
     def _search(self, fts_query: str) -> tuple[str, int]:
         """Vault FTS search for a prepared query, cached (queue_prefetch warms it)."""
-        args = [
-            "search",
-            "--query", _cli_value(fts_query[:500]),
-            "--limit", str(int(self._settings["prefetch_limit"])),
-            "--kinds", _RECALL_KINDS,
-        ]
-        result = self._run(args, timeout=min(float(self._settings["timeout"]), 6.0))
-        if not result["ok"]:
-            logger.debug("specmemo: search failed (%s)", result.get("error"))
-            return ("", 0)
-        data = result["data"] if isinstance(result["data"], dict) else {}
-        raw_hits = data.get("hits")
-        raw_hits = raw_hits if isinstance(raw_hits, list) else []
-        # Our own mirrors (session/prompt/built-in copies) are bookkeeping, not recall material —
-        # the built-in store is already injected by core, so echoing it back only adds noise.
-        hits = [h for h in raw_hits
-                if isinstance(h, dict) and "hermes-memory" not in (h.get("tags") or [])]
-        text, count = _format_hits(hits, int(self._settings["max_bytes"]))
-        block = f"### Vault matches for this turn\n{text}" if text else ""
+        try:
+            args = [
+                "search",
+                "--query", _cli_value(fts_query[:500]),
+                "--limit", str(int(self._settings["prefetch_limit"])),
+                "--kinds", _RECALL_KINDS,
+            ]
+            result = self._run(args, timeout=min(float(self._settings["timeout"]), 6.0))
+            if not result["ok"]:
+                logger.debug("specmemo: search failed (%s)", result.get("error"))
+                return ("", 0)
+            data = result["data"] if isinstance(result["data"], dict) else {}
+            raw_hits = data.get("hits")
+            raw_hits = raw_hits if isinstance(raw_hits, list) else []
+            # Our own mirrors (session/prompt/built-in copies) are bookkeeping, not recall material —
+            # the built-in store is already injected by core, so echoing it back only adds noise.
+            hits = [h for h in raw_hits
+                    if isinstance(h, dict) and "hermes-memory" not in (h.get("tags") or [])]
+            text, count = _format_hits(hits, int(self._settings["max_bytes"]))
+            block = f"### Vault matches for this turn\n{text}" if text else ""
+            with self._cache_lock:
+                self._recall_cache[fts_query] = (block, count)
+                if len(self._recall_cache) > 8:
+                    self._recall_cache.pop(next(iter(self._recall_cache)))
+                self._pending_recall = (block, count)
+            return (block, count)
+        finally:
+            with self._cache_lock:
+                self._inflight_queries.discard(fts_query)
+
+    def _has_exact_recall(self, query: str) -> bool:
         with self._cache_lock:
-            self._recall_cache[fts_query] = (block, count)
-            if len(self._recall_cache) > 8:
-                self._recall_cache.pop(next(iter(self._recall_cache)))
-        return (block, count)
+            return query in self._recall_cache or query in self._inflight_queries
 
     def _cached_recall(self, query: str) -> Optional[tuple[str, int]]:
         with self._cache_lock:
-            return self._recall_cache.get(query)
+            if query in self._recall_cache:
+                self._pending_recall = None
+                return self._recall_cache[query]
+            query_terms = set(query.split(" OR "))
+            for cached_fts, entry in reversed(list(self._recall_cache.items())):
+                if entry[0] and (query_terms & set(cached_fts.split(" OR "))):
+                    self._pending_recall = None
+                    return entry
+            if self._pending_recall is not None:
+                pending = self._pending_recall
+                self._pending_recall = None
+                return pending
+            return None
 
     def _mirror_slug(self, target: str, content: str) -> str:
         return f"hermes-memory-{target or 'memory'}-{_digest(content)}"
