@@ -1,0 +1,7 @@
+name: specmemo
+version: 0.1.0
+description: "spec-memo vault memory — automatic recall, turn/session tracking and built-in-memory mirroring through the memo CLI."
+external_dependencies:
+  - name: memo
+    install: "npm install -g spec-memo"
+    check: "memo --version"
