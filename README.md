@@ -81,6 +81,16 @@ uses the profile that owns the provider's `hermes_home`. The unnamed `default` p
 unusable value falls back to `hermes-agent` with a logged warning. Explicit spec-memo MCP
 calls must pass the same `projectId`.
 
+Plugins are installed per profile (`<hermes_home>/plugins/specmemo`), so update each profile's
+copy and restart the gateway so that profile's module reloads:
+
+```bash
+hermes -p developer plugins install --force https://github.com/jpolvora/spec-memo-hermes.git
+```
+
+Updating the default profile alone leaves named profiles on the old code; a stale copy keeps
+writing to `hermes-agent` and its init log line has no `project=` field.
+
 ## Behaviour notes
 
 - **One project per instance.** `bootstrap`, `search`, `get`, `upsert`, `forget`, `append`,
