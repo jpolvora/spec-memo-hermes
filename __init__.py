@@ -321,10 +321,12 @@ class SpecMemoMemoryProvider(MemoryProvider):
                      self._session_id, self._cwd or "-", kwargs.get("agent_workspace"), self._primary)
         if not self._primary:
             return
+        # One serialized background task for the startup writes: session start, then the
+        # brief. Two concurrent `memo` children contend on the vault lock (and a brand-new
+        # vault pays for index creation), which lands on the first turn's critical path.
         if self._settings["auto_recall"]:
-            # Warm the trap/decision brief off the turn path: the first turn reads whatever is ready.
-            self._request_brief()
-        if self._settings["record_turns"]:
+            self._request_brief(start_session=True)
+        elif self._settings["record_turns"]:
             self._in_background("specmemo-session-start",
                                 lambda: self._run(["session", "start", self._session_id]))
 
@@ -524,7 +526,7 @@ class SpecMemoMemoryProvider(MemoryProvider):
 
     # -- internals --------------------------------------------------
 
-    def _request_brief(self) -> None:
+    def _request_brief(self, *, start_session: bool = False) -> None:
         """Load the bootstrap brief exactly once, in the background (never on the turn path)."""
         with self._brief_lock:
             if self._brief_loaded or self._brief_loading:
@@ -533,6 +535,8 @@ class SpecMemoMemoryProvider(MemoryProvider):
 
         def _load() -> None:
             try:
+                if start_session and self._settings["record_turns"]:
+                    self._run(["session", "start", self._session_id])
                 self._vault_brief()
             finally:
                 with self._brief_lock:
