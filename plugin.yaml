@@ -1,6 +1,15 @@
 name: specmemo
-version: 0.1.0
-description: "spec-memo vault memory — automatic recall, turn/session tracking and built-in-memory mirroring through the memo CLI."
+version: "0.2.1"
+description: "spec-memo vault memory for Hermes Agent — one `hermes-agent` vault project, automatic recall, turn/session tracking and built-in-memory mirroring through the memo CLI."
+author: "Jone Polvora"
+license: "MIT"
+homepage: "https://github.com/jpolvora/spec-memo-hermes"
+kind: exclusive
+requires_hermes: ">=0.22"
+tags:
+  - memory
+  - spec-memo
+  - hermes-agent
 external_dependencies:
   - name: memo
     install: "npm install -g spec-memo"

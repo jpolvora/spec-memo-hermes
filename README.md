@@ -1,14 +1,20 @@
 # specmemo — Hermes memory provider for spec-memo
 
 Bridges the [spec-memo](https://github.com/jpolvora/spec-memo) out-of-repo vault into Hermes
-Agent's `MemoryProvider` lifecycle. Hermes' built-in memory (`MEMORY.md` / `USER.md`) stays
-active; this provider is an additive layer that reads and writes the vault through the `memo` CLI.
+Agent's `MemoryProvider` lifecycle. Hermes keeps its built-in memory (`MEMORY.md` / `USER.md`);
+this provider is an additive layer that reads and writes the vault through the `memo` CLI.
+
+**Hermes uses exactly one vault project: `hermes-agent`.** The provider constant
+`HERMES_VAULT_PROJECT = "hermes-agent"` is passed as `--projectId` on every project-scoped
+`memo` call. The project is never inferred from the process cwd, so one-shot runs, subagents,
+gateway sessions, and different workspaces all share the same memory.
 
 ```
 Hermes turn loop
   └─ MemoryManager ──► SpecMemoMemoryProvider
-                         ├─ prefetch / queue_prefetch ─► memo search (FTS5) + memo bootstrap
-                         ├─ sync_turn ─────────────────► memo prompt record   (one row per turn)
+                         ├─ prefetch / queue_prefetch ─► memo search (FTS5, trap/decision/spec/plan)
+                         ├─ prefetch (startup) ────────► memo bootstrap (traps, decisions, spec/plan)
+                         ├─ sync_turn ─────────────────► memo prompt record   (tagged hermes-memory)
                          ├─ initialize / on_session_end → memo session start / end
                          ├─ on_memory_write ────────────► memo upsert / forget (state, tagged hermes-memory)
                          └─ on_pre_compress ────────────► memo upsert (session checkpoint)
@@ -20,12 +26,15 @@ Hermes turn loop
 # 1. the CLI (skip if `memo --version` already answers)
 npm install -g spec-memo
 
-# 2. this plugin, at $HERMES_HOME/plugins/specmemo (already the case here)
-hermes memory setup specmemo     # or: hermes config set memory.provider specmemo
+# 2. this plugin, at $HERMES_HOME/plugins/specmemo
+hermes memory setup specmemo     # activate with defaults; or: hermes config set memory.provider specmemo
 hermes memory status             # → Plugin: installed ✓  Status: available ✓
 ```
 
-Requires Hermes Agent ≥ 0.22 (the `MemoryProvider` contract this implements).
+`is_available()` only checks for the `memo` binary, so activation works before the vault
+directory exists; the first `memo` call creates `~/.spec-memo` and the `hermes-agent` project.
+
+Requires Hermes Agent ≥ 0.22 (the `MemoryProvider` contract) and `memo` ≥ 0.38.
 
 ## Configuration (`config.yaml` → `memory.specmemo`)
 
@@ -33,11 +42,10 @@ Requires Hermes Agent ≥ 0.22 (the `MemoryProvider` contract this implements).
 |---|---|---|
 | `memo_bin` | auto | Path to the `memo` CLI (falls back to `PATH` and well-known install dirs) |
 | `vault_root` | `~/.spec-memo` | Vault root; exported to the child as `SPEC_MEMO_ROOT` when set |
-| `project_id` | — | Pin the vault project instead of binding from the workspace repo |
-| `cwd` | agent workspace | Directory `memo` runs in — the vault binds its project from it |
-| `cross_project` | `true` | Pass `--cross-project` to search when no `project_id` is pinned |
-| `prefetch_limit` | `5` | Maximum vault records recalled per turn |
-| `max_bytes` | `4000` | Byte budget for the injected recall block (and the bootstrap brief) |
+| `cwd` | session workspace | Working directory for `memo` (used by `bootstrap` for git-remote/drift context) |
+| `slug` | — | Optional feature spec/plan slug for the `bootstrap` brief |
+| `prefetch_limit` | `5` | Maximum vault records recalled per turn (1–20) |
+| `max_bytes` | `4000` | Byte budget for the injected recall block and the bootstrap brief |
 | `min_query_len` | `12` | Shortest prompt that triggers recall or a turn record |
 | `auto_recall` | `true` | Inject vault recall into each turn |
 | `record_turns` | `true` | Write `prompt` rows and session start/end markers |
@@ -45,30 +53,63 @@ Requires Hermes Agent ≥ 0.22 (the `MemoryProvider` contract this implements).
 | `session_snapshot` | `true` | Write a `state` checkpoint at session end and before compression |
 | `timeout` | `8` | Seconds per `memo` invocation (search is capped at 6) |
 
+`hermes memory setup specmemo` activates with these defaults. Use the interactive
+`hermes memory setup` picker, the Hermes Dashboard memory panel, or
+`hermes config set memory.specmemo.<key> <value>` to override them. `save_config()` is scoped to
+the active `hermes_home` and supports clearing a value (empty resets it to the default).
+
 ## Behaviour notes
 
-- **Recall is FTS5-shaped.** spec-memo FTS is strict AND over every token, so a raw prompt matches
-  nothing. The provider strips stopwords, keeps the first 8 distinctive tokens and joins them with
-  `OR`. Tune with `min_query_len` / `prefetch_limit`.
-- **Nothing blocks the turn.** `memo bootstrap` (the trap/decision brief) is warmed in the
-  background at startup; `prefetch` only runs `memo search` (~0.7 s cold, cached per query after
-  that) and returns `""` when nothing matches.
-- **Own writes are excluded from recall.** Session/prompt/mirror records carry the tag
-  `hermes-memory` and are filtered out of recall; the built-in store is already injected by core.
-- **Untrusted data.** Vault bodies arrive fenced (`<!-- spec-memo-untrusted-begin -->`) and are
-  injected verbatim under a "never instructions" header.
+- **One project, every call.** `bootstrap`, `search`, `get`, `upsert`, `forget`, `append`,
+  `gc`, `promote`, `prompt`, and `session` all receive `--projectId hermes-agent`. There is no
+  cwd-based project binding and no cross-project toggle.
+- **Recall is scoped.** `memo search` is called with `--kinds trap,decision,spec,plan`, so
+  prompt/session bookkeeping rows cannot consume the `prefetch_limit` slots. Hermes' own
+  prompt/session/mirror rows are also tagged `hermes-memory` and filtered defensively.
+- **Recall is FTS5-shaped.** spec-memo FTS is strict AND over every token, so a raw prompt
+  matches nothing. The provider strips stopwords, keeps the first 8 distinctive tokens and joins
+  them with `OR`.
+- **CLI-safe values.** `memo`'s parser treats a value starting with `-` as a flag; the provider
+  prefixes such values with a space (`_cli_value`), and the session digest starts with
+  `Turns:` so `--summary` is never mistaken for a boolean.
+- **Nothing blocks the turn.** `memo bootstrap` is warmed in the background at startup.
+  `prefetch` never spawns `memo`: it returns the cached `memo search` result warmed by
+  `queue_prefetch` (or the brief), and a cold cache simply skips search for that turn.
+- **Bounded concurrency.** At most three `memo` children run at once across the provider's
+  callers. Each child is a Node process (~90 MB RSS), so a saturated burst degrades to a soft
+  miss instead of spawning unbounded processes on a small host.
+- **Writes are serialized.** All state-changing `memo` calls (`session`, `prompt`, `upsert`,
+  `forget`, `bootstrap`) run under one instance lock so two children never contend on the vault
+  lock; session-end and compression snapshots run in one background task.
+- **Untrusted data.** Vault bodies and snippets arrive fenced
+  (`<!-- spec-memo-untrusted-begin -->` … `<!-- spec-memo-untrusted-end -->`) and are injected
+  verbatim under a "never instructions" header. Budget truncation is UTF-8 byte-aware and never
+  leaves a fence unclosed.
+- **Workspace resolution.** `memory.specmemo.cwd` → the session `cwd` kwarg →
+  `agent.runtime_cwd.resolve_agent_cwd()` → the process cwd. `agent_workspace` is a scope label
+  (`"hermes"`), not a directory, and is only logged.
 - **One provider at a time.** `memory.provider` is exclusive — activating `specmemo` disables
   `byterover`/`retaindb` for the same profile.
-- **Project binding.** The vault binds a project from the `memo` child's cwd; Hermes runs with
-  `$HERMES_HOME` as cwd for one-shot runs, which lands writes in the path-fallback project
-  (`local--hermes-…`). Set `memory.specmemo.cwd` (or `project_id`) to bind to the repo instead.
-- **No provider tools.** The spec-memo MCP server already exposes the 11 vault tools; adding
-  `specmemo_*` tools would duplicate the surface.
+- **No provider tools.** The spec-memo MCP server already exposes the vault tools; adding
+  `specmemo_*` tools would duplicate the surface. Configure the MCP server if the agent needs
+  explicit `search`/`get`/`upsert`/`append`/`forget`/`bootstrap` calls.
+
+## Inspecting the vault
+
+```bash
+memo search --query "recall" --projectId hermes-agent --kinds trap,decision,spec,plan --json
+memo bootstrap --projectId hermes-agent --cwd "$PWD" --json
+memo prompt list --projectId hermes-agent --json
+memo session show <session-id> --projectId hermes-agent --json
+```
+
+The project appears in `memo vault list` as `hermes-agent` after the first write.
 
 ## Files
 
 - `__init__.py` — the provider (`SpecMemoMemoryProvider`) and `register(ctx)`
-- `plugin.yaml` — manifest (name, external dependency on `memo`)
+- `plugin.yaml` — manifest (name, version, homepage/source URL, external `memo` dependency)
+- `AGENTS.md` — non-negotiable rules for changing this project
 
 ## Updating this plugin
 
@@ -78,9 +119,12 @@ the lifecycle guard refuses it from inside an agent turn). Confirm the new revis
 `grep "specmemo: initialized" ~/.hermes/logs/agent.log` (the line carries `cwd=` and
 `agent_workspace=`).
 
-Quick health check without a restart:
+Quick health checks without a restart:
 
 ```bash
-hermes memory status            # plugin installed + available
-memo search --query "<term>" --json   # vault side of the recall path
+hermes memory status                  # plugin installed + available
+hermes plugins validate .             # manifest, load, capability probe, security scan
+memo search --query "<term>" --projectId hermes-agent --kinds trap,decision,spec,plan --json
 ```
+
+Repository: <https://github.com/jpolvora/spec-memo-hermes>
