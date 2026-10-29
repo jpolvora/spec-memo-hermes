@@ -4,10 +4,11 @@ Bridges the [spec-memo](https://github.com/jpolvora/spec-memo) out-of-repo vault
 Agent's `MemoryProvider` lifecycle. Hermes keeps its built-in memory (`MEMORY.md` / `USER.md`);
 this provider is an additive layer that reads and writes the vault through the `memo` CLI.
 
-**Hermes uses exactly one vault project: `hermes-agent`.** The provider constant
-`HERMES_VAULT_PROJECT = "hermes-agent"` is passed as `--projectId` on every project-scoped
-`memo` call. The project is never inferred from the process cwd, so one-shot runs, subagents,
-gateway sessions, and different workspaces all share the same memory.
+**Each provider instance owns exactly one vault project: `hermes-agent`, or
+`hermes-agent-<profile>` when `memory.specmemo.profile` is set.** The resolved id is passed as
+`--projectId` on every project-scoped `memo` call. The project is never inferred from the
+process cwd, so one-shot runs, subagents, and different workspaces of one profile share the
+same memory, while different Hermes profiles can keep separate ones.
 
 ```
 Hermes turn loop
@@ -44,6 +45,7 @@ Requires Hermes Agent ≥ 0.22 (the `MemoryProvider` contract) and `memo` ≥ 0.
 | `vault_root` | `~/.spec-memo` | Vault root; exported to the child as `SPEC_MEMO_ROOT` when set |
 | `cwd` | session workspace | Working directory for `memo` (used by `bootstrap` for git-remote/drift context) |
 | `slug` | — | Optional feature spec/plan slug for the `bootstrap` brief |
+| `profile` | — | Vault project suffix: `hermes-agent-<profile>`; `auto` follows the bound Hermes profile (the unnamed `default` profile keeps `hermes-agent`) |
 | `prefetch_limit` | `5` | Maximum vault records recalled per turn (1–20) |
 | `max_bytes` | `4000` | Byte budget for the injected recall block and the bootstrap brief |
 | `min_query_len` | `12` | Shortest prompt that triggers recall or a turn record |
@@ -58,11 +60,28 @@ Requires Hermes Agent ≥ 0.22 (the `MemoryProvider` contract) and `memo` ≥ 0.
 `hermes config set memory.specmemo.<key> <value>` to override them. `save_config()` is scoped to
 the active `hermes_home` and supports clearing a value (empty resets it to the default).
 
+### Multiple profiles
+
+Each Hermes profile can keep its own vault project. Set `profile` in that profile's home:
+
+```bash
+hermes -p developer config set memory.specmemo.profile auto   # → hermes-agent-developer
+hermes config set memory.specmemo.profile coder               # → hermes-agent-coder
+```
+
+`profile` accepts a bare suffix (`coder`), a full id (`hermes-agent-coder`), or `auto`, which
+uses the profile that owns the provider's `hermes_home`. The unnamed `default` profile keeps
+`hermes-agent`, so existing vaults are untouched; a blank `profile` always means the shared
+`hermes-agent` project. Suffixes are normalized to `[a-z0-9._-]` (48 chars max), and an
+unusable value falls back to `hermes-agent` with a logged warning. Explicit spec-memo MCP
+calls must pass the same `projectId`.
+
 ## Behaviour notes
 
-- **One project, every call.** `bootstrap`, `search`, `get`, `upsert`, `forget`, `append`,
-  `gc`, `promote`, `prompt`, and `session` all receive `--projectId hermes-agent`. There is no
-  cwd-based project binding and no cross-project toggle.
+- **One project per instance.** `bootstrap`, `search`, `get`, `upsert`, `forget`, `append`,
+  `gc`, `promote`, `prompt`, and `session` all receive `--projectId` for this instance's
+  project: `hermes-agent`, or `hermes-agent-<profile>` when `memory.specmemo.profile` is set.
+  There is no cwd-based project binding and no cross-project toggle.
 - **Recall is scoped.** `memo search` is called with `--kinds trap,decision,spec,plan`, so
   prompt/session bookkeeping rows cannot consume the `prefetch_limit` slots. Hermes' own
   prompt/session/mirror rows are also tagged `hermes-memory` and filtered defensively.
@@ -104,7 +123,15 @@ memo prompt list --projectId hermes-agent --json
 memo session show <session-id> --projectId hermes-agent --json
 ```
 
-The project appears in `memo vault list` as `hermes-agent` after the first write.
+The project appears in `memo vault list` as `hermes-agent` after the first write. With
+`profile: coder`, substitute `hermes-agent-coder` for `hermes-agent` in every command above —
+and in explicit spec-memo MCP calls.
+
+`memo status` is **not** project-scoped: it has no `--projectId` option, so an extra
+`--projectId hermes-agent` is silently ignored and the `project` block reports whatever identity
+the cwd resolves to (a `local-<dir>-<hash>` fallback when the cwd is not a git repo), plus
+whole-vault totals. Use `memo search --projectId hermes-agent …` or the MCP `search` tool for
+per-project records.
 
 ## Files
 

@@ -4,15 +4,23 @@ This repository is a Hermes Agent memory-provider plugin. It bridges the externa
 [spec-memo](https://github.com/jpolvora/spec-memo) vault into Hermes' `MemoryProvider`
 lifecycle. These rules are non-negotiable; change them only with a reviewed commit.
 
-## 1. One vault project: `hermes-agent`
+## 1. One vault project per instance: `hermes-agent[-<profile>]`
 
-- Hermes uses exactly one spec-memo project. The module constant
-  `HERMES_VAULT_PROJECT = "hermes-agent"` is the single source of truth.
+- The module constant `HERMES_VAULT_PROJECT = "hermes-agent"` is the base id and the single
+  source of truth for the namespace.
+- `memory.specmemo.profile` may add exactly one suffix, producing `hermes-agent-<profile>`.
+  Accepted forms are a bare suffix (`coder`), a full id (`hermes-agent-coder`), or `auto`,
+  which resolves the bound `hermes_home` through `hermes_constants.profile_name_for_home`
+  (the unnamed `default` profile keeps the base id). Blank means the shared `hermes-agent`.
+- Normalize the suffix to `[a-z0-9._-]`, cap it at 48 characters, and fall back to the base id
+  with a warning when nothing usable remains — never to a different inferred project.
 - Every project-scoped `memo` call (`bootstrap`, `search`, `get`, `upsert`, `forget`, `append`,
-  `gc`, `promote`, `prompt`, `session`) must pass `--projectId hermes-agent`.
-- Never infer the project from the process cwd, `agent_workspace`, a session id, or a config
-  value. There is no `project_id` or `cross_project` setting.
-- Do not add multi-project or cross-project behavior without an explicit product decision.
+  `gc`, `promote`, `prompt`, `session`) must pass `--projectId` for the instance's resolved
+  project.
+- Never infer the project from the process cwd, `agent_workspace`, a session id, or any other
+  config value. There is no `project_id` or `cross_project` setting.
+- Do not add further multi-project or cross-project behavior without an explicit product
+  decision.
 
 ## 2. Vault only — never product git
 
@@ -76,7 +84,7 @@ lifecycle. These rules are non-negotiable; change them only with a reviewed comm
 ## 7. Configuration
 
 - All provider settings live under `memory.specmemo` in `config.yaml`.
-- Keep the schema honest: `memo_bin`, `vault_root`, `cwd`, `slug`, `prefetch_limit`,
+- Keep the schema honest: `memo_bin`, `vault_root`, `cwd`, `slug`, `profile`, `prefetch_limit`,
   `max_bytes`, `min_query_len`, `auto_recall`, `record_turns`, `mirror_writes`,
   `session_snapshot`, `timeout`.
 - Clamp numeric settings to their documented ranges; never trust raw config types.
@@ -105,13 +113,15 @@ Also verify:
 - a prompt starting with `-` is recorded (not rejected as a boolean);
 - `on_session_end` writes `summary: Turns: …` (not `summary: 'true'`);
 - recall never returns `kind: prompt` or `kind: session`;
-- truncation leaves no unmatched `spec-memo-untrusted-begin` fence.
+- truncation leaves no unmatched `spec-memo-untrusted-begin` fence;
+- `memory.specmemo.profile: coder` writes to `projects/hermes-agent-coder/` and leaves the
+  base `hermes-agent` project untouched (`profile: auto` resolves the bound profile name).
 
 Do not run tests or smoke commands against the real `~/.spec-memo` vault.
 
 ## 9. Release hygiene
 
-- Bump `version` in `plugin.yaml` for any behavior or config change (current: `0.2.2`).
+- Bump `version` in `plugin.yaml` for any behavior or config change (current: `0.3.0`).
 - Keep `homepage` pointing at <https://github.com/jpolvora/spec-memo-hermes> so the Hermes UI
   shows the source repository.
 - Keep `requires_hermes` and the README's version requirement in sync with the APIs used.
