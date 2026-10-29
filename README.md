@@ -69,3 +69,18 @@ Requires Hermes Agent ≥ 0.22 (the `MemoryProvider` contract this implements).
 
 - `__init__.py` — the provider (`SpecMemoMemoryProvider`) and `register(ctx)`
 - `plugin.yaml` — manifest (name, external dependency on `memo`)
+
+## Updating this plugin
+
+Hermes imports the provider once per process: edits stay invisible to new turns until the
+gateway/agent process restarts (`hermes gateway restart` from a shell **outside** the gateway —
+the lifecycle guard refuses it from inside an agent turn). Confirm the new revision loaded with
+`grep "specmemo: initialized" ~/.hermes/logs/agent.log` (the line carries `cwd=` and
+`agent_workspace=`).
+
+Quick health check without a restart:
+
+```bash
+hermes memory status            # plugin installed + available
+memo search --query "<term>" --json   # vault side of the recall path
+```
